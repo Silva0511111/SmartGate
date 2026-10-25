@@ -1,9 +1,11 @@
 import sys, sqlite3
 from pathlib import Path
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 
 DB_NAME = sys.argv[1] if len(sys.argv) > 1 else "gate_log.db"
-DB_PATH = Path(__file__).resolve().parent / DB_NAME
+BASE = Path(__file__).resolve().parent
+DB_PATH = BASE / DB_NAME
+SNAP_DIR = BASE / "snapshots"
 HOST, PORT = "127.0.0.1", 5000     # "0.0.0.0" lets a phone on the same Wi-Fi connect
 
 CLASSES = ["authorized", "unknown", "visitor", "delivery-person",
@@ -26,9 +28,15 @@ def scalar(sql, args=()):
     rows = query(sql, args)
     return rows[0][0] if rows else 0
 
+@app.route("/snapshots/<path:filename>")
+def snapshot(filename):
+    return send_from_directory(SNAP_DIR, filename)
+
 @app.route("/api/data")
 def api_data():
-    recent = query("SELECT timestamp, label, confidence, decision "
+    has_snap = any(r[1] == "snapshot_path" for r in query("PRAGMA table_info(events)"))
+    snap_col = "snapshot_path" if has_snap else "NULL"
+    recent = query(f"SELECT timestamp, label, confidence, decision, {snap_col} "
                    "FROM events ORDER BY id DESC LIMIT 15")
     counts = dict(query("SELECT decision, COUNT(*) FROM events GROUP BY decision"))
     live = []
@@ -38,7 +46,8 @@ def api_data():
         n, ok = rows[0] if rows else (0, 0)
         live.append({"cls": c, "trials": n, "correct": ok})
     return jsonify(
-        recent=[{"time": t, "label": l, "conf": cf, "decision": d} for t, l, cf, d in recent],
+        recent=[{"time": t, "label": l, "conf": cf, "decision": d,
+                 "snap": Path(s).name if s else None} for t, l, cf, d, s in recent],
         counts=counts,
         total=sum(counts.values()),
         live=live,
@@ -77,6 +86,7 @@ PAGE = """<!DOCTYPE html>
   th { color: #555; font-weight: 600; }
   .pill { color: #fff; border-radius: 12px; padding: 2px 10px; font-size: .8rem; white-space: nowrap; }
   .note { font-size: .85rem; color: #555; margin-top: 8px; }
+  img.thumb { height: 40px; border-radius: 4px; display: block; }
 </style>
 </head>
 <body>
@@ -92,6 +102,11 @@ const COLORS = {"ACCESS GRANTED": "#1e9e4a", "ACCESS DENIED": "#d33232",
                 "NOTIFY OWNER": "#e8890c", "LOITERING ALERT": "#9b1c1c"};
 const color = d => COLORS[d] || "#777";
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function thumb(e) {
+  if (!e.snap) return "";
+  const url = "/snapshots/" + encodeURIComponent(e.snap);
+  return '<a href="' + url + '" target="_blank"><img class="thumb" src="' + url + '"></a>';
+}
 
 async function refresh() {
   try {
@@ -118,10 +133,10 @@ async function refresh() {
       '<div class="card"><div class="n">' + x[1] + '</div><div class="t">' + x[0] + '</div></div>').join("");
 
     document.getElementById("events").innerHTML =
-      "<tr><th>Time</th><th>Detected</th><th>Confidence</th><th>Decision</th></tr>" +
+      "<tr><th>Time</th><th>Detected</th><th>Confidence</th><th>Decision</th><th>Photo</th></tr>" +
       d.recent.map(e => "<tr><td>" + esc(e.time) + "</td><td>" + esc(e.label) + "</td><td>" +
         Math.round(e.conf * 100) + '%</td><td><span class="pill" style="background:' + color(e.decision) +
-        '">' + esc(e.decision) + "</span></td></tr>").join("");
+        '">' + esc(e.decision) + "</span></td><td>" + thumb(e) + "</td></tr>").join("");
 
     document.getElementById("live").innerHTML =
       "<tr><th>Class</th><th>Trials</th><th>Correct</th><th>Accuracy</th></tr>" +
