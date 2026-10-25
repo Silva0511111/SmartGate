@@ -7,3 +7,4 @@ evaluation_results.csv
 __pycache__/
 *.pyc
 .env
+demo_log.db
